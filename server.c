@@ -8,10 +8,13 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <time.h>
 
 int sockfd, newsockfd, portno;
 socklen_t clilen;
 struct sockaddr_in serv_addr, cli_addr;
+char* msg;
+long fsize;
 char* error;
 int errno_temp;
 
@@ -29,12 +32,7 @@ int writeToClient(int sfd, char *data, int len)
   while (len > 0){
     int n = send(sfd, data, len, 0);
     if (n <= 0){
-      if (n == 0){
-        fprintf(stderr, "The client was not written to: disconnected\n");
-      }
-      else {
-        fprintf(stderr, "The client was not written to\n");
-      }
+      fprintf(stderr, "The client was not written to\n");
       return 0;
     }
     data += n;
@@ -50,14 +48,14 @@ long fileSize(FILE *fp)
     report_error(error);
   }
 
-  long fsize = ftell(fp);
-  if (fsize == -1) {
+  long file_size = ftell(fp);
+  if (file_size == -1) {
     error = "ftell";
     report_error(error);
   }
   rewind(fp);
 
-  return fsize;
+  return file_size;
 }
 
 void setUpSockets()
@@ -79,25 +77,17 @@ void setUpSockets()
   }
 }
 
-int main(int argc, char *argv[])
+void loadFile()
 {
-  if (argc < 2) {
-      fprintf(stderr, "ERROR, no port provided\n");
-      exit(1);
-  }
-  portno = atoi(argv[1]);
-
-  setUpSockets();
-
   FILE *f = fopen("index.html", "rb");
   if (!f) {
     error = "fopen";
     report_error(error);
   }
 
-  long fsize = fileSize(f);
+  fsize = fileSize(f);
 
-  char *msg = (char*) malloc(fsize+1);
+  msg = (char*) malloc(fsize+1);
   if (!msg){
     error = "malloc";
     report_error(error);
@@ -109,6 +99,17 @@ int main(int argc, char *argv[])
   }
   msg[fsize] = 0;
   fclose(f);
+}
+
+int main(int argc, char *argv[])
+{
+  if (argc < 2) {
+      fprintf(stderr, "ERROR, no port provided\n");
+      exit(1);
+  }
+  portno = atoi(argv[1]);
+
+  setUpSockets();
 
   if (listen(sockfd, 5) < 0) {
     error = "listen";
@@ -131,22 +132,19 @@ int main(int argc, char *argv[])
       close(newsockfd);
       continue;
     }
+    printf("%s\n", fromClientbuf);
 
+    //parse the request
+    //get the filename
+    //search for files in directory
+    //convert names to lowercase
+    //use strstr maybe
+
+    loadFile();
+
+    int n;
     char *data;
     data="HTTP/1.1 200 OK\r\n";
-    if (!writeToClient(newsockfd, data, sizeof(data))){
-      close(newsockfd);
-      continue;
-    }
-
-    char Content_length[40];
-    int n = sprintf(Content_length, "Content-length: %ld\r\n", fsize);
-    if (!writeToClient(newsockfd, Content_length, n)){
-        close(newsockfd);
-        continue;
-    }
-
-    data="Content-Type: text/html\r\n";
     if (!writeToClient(newsockfd, data, sizeof(data))){
       close(newsockfd);
       continue;
@@ -158,12 +156,42 @@ int main(int argc, char *argv[])
       continue;
     }
 
+    // const char *days[] = {"Sunday","Monday","Tuesday"};
+    // char dateTime[100];
+    // time_t t = time(NULL);
+    // struct tm tm = *localtime(&t);
+    // n = sprintf(dateTime, "Date: %d-%d-%d %d:%d:%d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_wday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    // printf("%s\n", dateTime);
+
+    data="Server: Web Server in C\r\n\r\n";
+    if (!writeToClient(newsockfd, data, sizeof(data))){
+      close(newsockfd);
+      continue;
+    }
+
+    //other headers in response? Date, server, last-modified?
+
+    char Content_length[40];
+    n = sprintf(Content_length, "Content-length: %ld\r\n", fsize);
+    if (!writeToClient(newsockfd, Content_length, n)){
+        close(newsockfd);
+        continue;
+    }
+
+    //char fileType[40];
+    //n = sprintf(fileType, "Content-Type: %s\r\n", filetype);
+
+    data="Content-Type: text/html\r\n";
+    if (!writeToClient(newsockfd, data, sizeof(data))){
+      close(newsockfd);
+      continue;
+    }
+
     if (!writeToClient(newsockfd, msg, fsize)){
         close(newsockfd);
         continue;
     }
 
-    fprintf(stderr, "The file was sent successfully\n");
     close(newsockfd);
   }
   return 0;
