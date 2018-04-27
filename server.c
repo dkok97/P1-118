@@ -9,6 +9,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/sendfile.h>
+#include <libgen.h>
+#include <ctype.h>
 
 int sockfd, newsockfd, portno;
 socklen_t clilen;
@@ -17,6 +21,7 @@ char* msg;
 long fsize;
 char* error;
 int errno_temp;
+int DEBUG = 1;
 
 void report_error(const char* err)
 {
@@ -37,6 +42,20 @@ int writeToClient(int sfd, char *data, int len)
     }
     data += n;
     len -= n;
+  }
+  return 1;
+}
+
+int writeFile(int sfd, int ffd, int len)
+{
+  int bytesSent=0;
+  while (len > bytesSent){
+    int n = sendfile(sfd, ffd, 0, len-bytesSent);
+    if (n <= 0){
+      fprintf(stderr, "The client was not written to\n");
+      return 0;
+    }
+    bytesSent+=len;
   }
   return 1;
 }
@@ -77,28 +96,101 @@ void setUpSockets()
   }
 }
 
-void loadFile()
+char *findExtension(char *filename)
 {
-  FILE *f = fopen("index.html", "rb");
+    char *dot = strrchr(filename, '.');
+
+    if(dot==NULL) return "application/octet-stream";
+
+    if(!dot || dot == filename) return "";
+
+    if(strcmp(dot + 1, "jpeg") == 0)
+    {
+    	return "image/jpeg";
+    }
+    else if(strcmp(dot + 1, "jpg") == 0)
+    {
+    	return "image/jpg";
+    }
+    else if(strcmp(dot + 1, "gif") == 0)
+    {
+    	return "image/gif";
+    }
+    else if(strcmp(dot + 1, "txt") == 0)
+    {
+    	return "text/plain";
+    }
+    else if(strcmp(dot + 1, "png") == 0)
+    {
+    	return "image/png";
+    }
+    else if(strcmp(dot + 1, "htm") == 0 || strcmp(dot + 1, "html") == 0)
+    {
+    	return "text/html";
+    }
+
+    return "";
+}
+
+int loadFile(char* filename)
+{
+  if (strcmp(filename,"favicon.ico")==0) return 2;
+  if(DEBUG) fprintf(stderr, "LOOKING FOR: %s\n", filename);
+  FILE* f = fopen(filename,"r");
   if (!f) {
-    error = "fopen";
-    report_error(error);
+    return 0;
   }
 
   fsize = fileSize(f);
-
-  msg = (char*) malloc(fsize+1);
-  if (!msg){
-    error = "malloc";
-    report_error(error);
-  }
-
-  if (fread(msg, fsize, 1, f) != 1){
-    error = "fread";
-    report_error(error);
-  }
-  msg[fsize] = 0;
+  if(DEBUG) fprintf(stderr, "size: %li\n", fsize);
   fclose(f);
+  return 1;
+}
+
+char* getPath(char* request) {
+  char* slash;
+  char* Http;
+  slash=strchr(request, '/');
+  long path_start=slash-request;
+  Http=strstr(request, "HTTP/1.1");
+  long path_end=Http-request-1;
+  char* path=malloc(path_end-path_start+1);
+  strncpy(path, request+path_start, path_end-path_start);
+  path[path_end-path_start]=0;
+  return path;
+}
+
+char* spaceHandler(char *s)
+{
+    char* p=calloc(strlen(s),1);
+    int i = 0;
+    int j = 0;
+    while (i!=strlen(s)) {
+        if ((s[i]) == '%'){
+            p[j]=' ';
+            j++;
+            i+=3;
+        }
+        else {
+            p[j]=s[i];
+            j++;
+            i++;
+        }
+    }
+    return p;
+}
+
+char* lostr(char *p)
+{
+    char *temp = strdup(p); // make a copy
+
+    unsigned char *tptr = (unsigned char *)temp;
+    while(*tptr) {
+        *tptr = tolower(*tptr);
+        tptr++;
+    }
+
+    return temp;
 }
 
 int main(int argc, char *argv[])
@@ -132,67 +224,77 @@ int main(int argc, char *argv[])
       close(newsockfd);
       continue;
     }
+    fromClientbuf[ret] = 0;
+    char* validReq=strstr(fromClientbuf, "GET");
+    if (!validReq) {
+      fprintf(stderr, "Not a valid http request\n");
+      continue;
+    }
+    char* icon=strstr(fromClientbuf, "favicon");
+    if (icon) {
+      continue;
+    }
     printf("%s\n", fromClientbuf);
 
-    //parse the request
-    //get the filename
-    //search for files in directory
-    //convert names to lowercase
-    //use strstr maybe
+    char* path = getPath(fromClientbuf);
+    if (DEBUG) fprintf(stderr, "%s\n", path);
 
-    loadFile();
+    char* filename = basename(path);
+    char* fileNameLower = lostr(filename);
+    char* filename2 = spaceHandler(fileNameLower);
+    if (DEBUG) fprintf(stderr, "FILENAME: %s\n", filename2);
 
-    int n;
+    char* fileType = findExtension(filename2);
+    if (DEBUG) fprintf(stderr, "TYPE: %s\n", fileType);
+
+    int retLoad = loadFile(filename2);
+    if (DEBUG) fprintf(stderr, "RET: %i\n", retLoad);
+
     char *data;
-    data="HTTP/1.1 200 OK\r\n";
-    if (!writeToClient(newsockfd, data, sizeof(data))){
-      close(newsockfd);
-      continue;
-    }
-
-    data="Connection: close\r\n\r\n";
-    if (!writeToClient(newsockfd, data, sizeof(data))){
-      close(newsockfd);
-      continue;
-    }
-
-    // const char *days[] = {"Sunday","Monday","Tuesday"};
-    // char dateTime[100];
-    // time_t t = time(NULL);
-    // struct tm tm = *localtime(&t);
-    // n = sprintf(dateTime, "Date: %d-%d-%d %d:%d:%d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_wday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-    // printf("%s\n", dateTime);
-
-    data="Server: Web Server in C\r\n\r\n";
-    if (!writeToClient(newsockfd, data, sizeof(data))){
-      close(newsockfd);
-      continue;
-    }
-
-    //other headers in response? Date, server, last-modified?
-
-    char Content_length[40];
-    n = sprintf(Content_length, "Content-length: %ld\r\n", fsize);
-    if (!writeToClient(newsockfd, Content_length, n)){
+    if (retLoad==0) {
+      data="HTTP/1.1 404 Not Found\r\nConnection: close\r\nServer: Web Server in C\r\nContent-Type: text/html\r\n";
+      if (!writeToClient(newsockfd, data, strlen(data))) {
         close(newsockfd);
         continue;
-    }
+      }
+      char* err_msg = "<h1>ERROR 404 File Not Found</h1>";
+      char Content_length[40];
+      int n = sprintf(Content_length, "Content-length: %ld\r\n\r\n", strlen(err_msg));
+      if (DEBUG) fprintf(stderr, "WRITING: %i\n", n);
+      Content_length[n]=0;
+      if (!writeToClient(newsockfd, Content_length, n)){
+          close(newsockfd);
+          continue;
+      }
 
-    //char fileType[40];
-    //n = sprintf(fileType, "Content-Type: %s\r\n", filetype);
-
-    data="Content-Type: text/html\r\n";
-    if (!writeToClient(newsockfd, data, sizeof(data))){
-      close(newsockfd);
-      continue;
-    }
-
-    if (!writeToClient(newsockfd, msg, fsize)){
+      if (!writeToClient(newsockfd, err_msg, strlen(err_msg))) {
         close(newsockfd);
         continue;
+      }
+      close(newsockfd);
     }
 
-    close(newsockfd);
+    else if (retLoad==2) {
+      close(newsockfd);
+    }
+
+    else {
+      char* headers = calloc(1, 1024);
+      int n = sprintf(headers, "HTTP/1.1 200 OK\r\nConnection: close\r\nServer: Web Server in C\r\nContent-Type: %s\r\nContent-length: %ld\r\n\r\n", fileType, fsize);
+      if (!writeToClient(newsockfd, headers, n)){
+        close(newsockfd);
+        continue;
+      }
+
+      int fd1 = open(filename2, O_RDONLY,0);
+
+      if (!writeFile(newsockfd, fd1, fsize)){
+          close(newsockfd);
+          continue;
+      }
+
+      close(newsockfd);
+    }
   }
   return 0;
 }
